@@ -68,6 +68,7 @@ export const authHandler = {
         "<p>The connection is awaiting administrator setup. No Tripleseat access is enabled.</p>",
         503
       );
+    let stage = "AUTH_START";
     try {
       if (url.pathname === "/authorize" && request.method === "GET") {
         const info = await env.OAUTH_PROVIDER.parseAuthRequest(request);
@@ -170,6 +171,7 @@ export const authHandler = {
             400,
             clearCookie(state)
           );
+        stage = "AUTH_UPSTREAM_EXCHANGE";
         const info = await env.CONNECTIONS.get(
           env.CONNECTIONS.idFromName(state)
         ).finish(await digest(browser), code);
@@ -179,6 +181,7 @@ export const authHandler = {
             400,
             clearCookie(state)
           );
+        stage = "AUTH_COMPLETE";
         const result = await env.OAUTH_PROVIDER.completeAuthorization({
           request: info,
           userId: state,
@@ -197,10 +200,15 @@ export const authHandler = {
         });
       }
       return page("<p>Page not found.</p>", 404);
-    } catch {
-      // Never expose upstream bodies, authorization codes, or credentials.
+    } catch (error) {
+      // Only fixed diagnostic labels and HTTP status codes may leave the server.
+      const message = error instanceof Error ? error.message : "";
+      const diagnostic =
+        message.match(
+          /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|SCOPE_MISSING|SITE_MISMATCH)\b/
+        )?.[0] ?? stage;
       return page(
-        "<p>Unable to authorize. Ask your administrator to check the Tripleseat application, read permissions, site ID, and encrypted secrets, then reconnect.</p>",
+        `<p>Unable to authorize. Diagnostic code: ${diagnostic}. Share this code with your administrator. Do not share passwords or secret values.</p>`,
         400
       );
     }

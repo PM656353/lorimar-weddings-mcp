@@ -107,8 +107,7 @@ async function tokenRequest(
       client_secret: env.TRIPLESEAT_CLIENT_SECRET
     })
   });
-  if (!response.ok)
-    throw new Error("Tripleseat authorization failed; reconnect your account.");
+  if (!response.ok) throw new Error(`AUTH_TOKEN_HTTP_${response.status}`);
   const body: unknown = await response.json();
   if (
     !isRecord(body) ||
@@ -117,7 +116,7 @@ async function tokenRequest(
     typeof body.expires_in !== "number" ||
     body.expires_in <= 0
   ) {
-    throw new Error("Unexpected Tripleseat token response.");
+    throw new Error("AUTH_TOKEN_FORMAT");
   }
   if (
     typeof body.scope === "string" &&
@@ -125,7 +124,7 @@ async function tokenRequest(
       (scope) => !body.scope!.toString().split(" ").includes(scope)
     )
   ) {
-    throw new Error("Tripleseat did not grant the required read permissions.");
+    throw new Error("AUTH_SCOPE_MISSING");
   }
   return {
     access: body.access_token,
@@ -183,13 +182,9 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
         redirect: "error",
         signal: AbortSignal.timeout(15000)
       });
-      if (
-        !sites.ok ||
-        !hasSite(await sites.json(), this.env.TRIPLESEAT_SITE_ID)
-      )
-        throw new Error(
-          "This account cannot access the configured Lorimar site."
-        );
+      if (!sites.ok) throw new Error(`AUTH_SITES_HTTP_${sites.status}`);
+      if (!hasSite(await sites.json(), this.env.TRIPLESEAT_SITE_ID))
+        throw new Error("AUTH_SITE_MISMATCH: configured Lorimar site");
       await this.ctx.storage.put("tokens", await seal(this.env, tokens));
       await this.ctx.storage.put("deadline", Date.now() + TTL);
       await this.ctx.storage.setAlarm(Date.now() + TTL);
