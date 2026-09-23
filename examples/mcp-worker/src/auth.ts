@@ -4,7 +4,8 @@ import { digest, READ_SCOPE, UPSTREAM_SCOPES } from "./connection";
 const headers = {
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
-  "Referrer-Policy": "no-referrer",
+  // Preserve Origin on the consent POST without leaking URLs cross-origin.
+  "Referrer-Policy": "same-origin",
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy":
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
