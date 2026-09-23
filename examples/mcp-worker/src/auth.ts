@@ -124,13 +124,12 @@ export const authHandler = {
             "<p>Your browser did not return the sign-in cookie (AUTH_COOKIE). Open this connection in a regular browser tab with cookies enabled.</p>",
             400
           );
-        if (
-          !(await env.CONNECTIONS.get(
-            env.CONNECTIONS.idFromName(state)
-          ).approve(await digest(browser)))
-        )
+        const approval = await env.CONNECTIONS.get(
+          env.CONNECTIONS.idFromName(state)
+        ).approve(await digest(browser));
+        if (approval !== "approved")
           return page(
-            "<p>The sign-in session no longer matches this browser, has expired, or was already used (AUTH_SESSION). Close other Lorimar sign-in tabs and reconnect.</p>",
+            `<p>Sign-in could not continue. Diagnostic code: ${escapeHtml(approval)}. Share this code with your administrator.</p>`,
             400
           );
         const upstream = new URL(

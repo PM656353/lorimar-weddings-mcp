@@ -15,7 +15,8 @@ export interface LorimarEnv {
   PUBLIC_ORIGIN: string;
 }
 export const READ_SCOPE = "tripleseat:read";
-export const UPSTREAM_SCOPES = "leads:read contacts:read events:read sites:read";
+export const UPSTREAM_SCOPES =
+  "leads:read contacts:read events:read sites:read";
 const API = "https://api.tripleseat.com";
 const TTL = 30 * 24 * 60 * 60 * 1000;
 type Pending = {
@@ -146,18 +147,15 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
     });
     await this.ctx.storage.setAlarm(Date.now() + 600000);
   }
-  async approve(browser: string): Promise<boolean> {
+  async approve(browser: string): Promise<string> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const p = await this.ctx.storage.get<Pending>("pending");
-      if (
-        !p ||
-        p.browser !== browser ||
-        p.expires < Date.now() ||
-        p.stage !== "consent"
-      )
-        return false;
+      if (!p) return "AUTH_STATE_MISSING";
+      if (p.browser !== browser) return "AUTH_BROWSER_MISMATCH";
+      if (p.expires < Date.now()) return "AUTH_TIMED_OUT";
+      if (p.stage !== "consent") return "AUTH_ALREADY_USED";
       await this.ctx.storage.put("pending", { ...p, stage: "upstream" });
-      return true;
+      return "approved";
     });
   }
   async finish(browser: string, code: string): Promise<AuthRequest | null> {

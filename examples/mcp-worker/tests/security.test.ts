@@ -197,9 +197,13 @@ describe("authorization", () => {
   it("binds consent to the browser and consumes it once", async () => {
     const { connection, info } = fixture();
     await connection.begin(info, await digest("browser"));
-    expect(await connection.approve(await digest("other"))).toBe(false);
-    expect(await connection.approve(await digest("browser"))).toBe(true);
-    expect(await connection.approve(await digest("browser"))).toBe(false);
+    expect(await connection.approve(await digest("other"))).toBe(
+      "AUTH_BROWSER_MISMATCH"
+    );
+    expect(await connection.approve(await digest("browser"))).toBe("approved");
+    expect(await connection.approve(await digest("browser"))).toBe(
+      "AUTH_ALREADY_USED"
+    );
   });
   it("rejects unapproved callback without token exchange", async () => {
     const { connection, info } = fixture();
