@@ -2,10 +2,41 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "lorimar-weddings-mcp",
   "compatibility_date": "2026-06-11",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "main": "src/server.ts",
   "assets": {
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/mcp"]
-  }
+    "run_worker_first": [
+      "/*"
+    ]
+  },
+  "vars": {
+    "PUBLIC_ORIGIN": "https://lorimar-weddings-mcp.patrick-07a.workers.dev",
+    "TRIPLESEAT_SITE_ID": "6368"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "f2d516f780854267990150f7cc7d5833"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONNECTIONS",
+        "class_name": "TripleseatConnection"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "lorimar-v1",
+      "new_sqlite_classes": [
+        "TripleseatConnection"
+      ]
+    }
+  ],
+  "preview_urls": false
 }
