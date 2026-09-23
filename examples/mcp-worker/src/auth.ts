@@ -101,7 +101,7 @@ export const authHandler = {
           await digest(browser)
         );
         return page(
-          `<p><strong>${escapeHtml(client.clientName || "Your assistant")}</strong> requests read-only access to Lorimar's Tripleseat leads, contacts, and events.</p><p>Return address: ${escapeHtml(info.redirectUri)}</p><p>It cannot send messages, change records, or book tours. Continue only if you started this connection.</p><form method="post" action="/authorize"><input type="hidden" name="state" value="${state}"><button type="submit">Continue to Tripleseat</button></form>`,
+          `<p><strong>${escapeHtml(client.clientName || "Your assistant")}</strong> requests read-only access to Lorimar's Tripleseat leads, contacts, and events.</p><p>Return address: ${escapeHtml(info.redirectUri)}</p><p>It cannot send messages, change records, or book tours. Continue only if you started this connection.</p><form method="post" action="${escapeHtml(`/authorize${url.search}`)}"><input type="hidden" name="state" value="${state}"><button type="submit">Continue to Tripleseat</button></form>`,
           200,
           `${cookieName(state)}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`
         );
@@ -122,7 +122,11 @@ export const authHandler = {
           );
         if (!browser)
           return page(
-            "<p>Your browser did not return the sign-in cookie (AUTH_COOKIE). Open this connection in a regular browser tab with cookies enabled.</p>",
+            `<p>This sign-in session is no longer available in this browser (AUTH_COOKIE). It may have expired, been cleared after an earlier attempt, or been blocked by the browser.</p>${
+              url.searchParams.has("client_id")
+                ? `<p><a href="${escapeHtml(`/authorize${url.search}`)}">Start a fresh sign-in</a></p>`
+                : "<p>Return to your assistant and choose Connect to start a fresh sign-in.</p>"
+            }<p>If a fresh attempt shows this same message before reaching Tripleseat, tell your administrator.</p>`,
             400
           );
         const approval = await env.CONNECTIONS.get(

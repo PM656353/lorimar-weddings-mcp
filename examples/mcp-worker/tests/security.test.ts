@@ -194,6 +194,49 @@ describe("authorization", () => {
     );
     expect((await submit(firstCookie)).status).toBe(400);
   });
+  it("reproduces a cleared cookie after a failed callback and offers a fresh start", async () => {
+    const { env } = fixture();
+    const startUrl = `${origin}/authorize?client_id=test-client&state=client-state`;
+    const start = await authHandler.fetch(new Request(startUrl), env);
+    const html = await start.text();
+    const state = html.match(/name="state" value="([^"]+)"/)![1];
+    const cookie = start.headers.get("Set-Cookie")!.split(";")[0];
+    expect(cookie).toMatch(/^__Host-lorimar_auth_/);
+    expect(start.headers.get("Set-Cookie")).toContain(
+      "Secure; HttpOnly; SameSite=Lax"
+    );
+    const submit = (value: string) =>
+      authHandler.fetch(
+        new Request(startUrl, {
+          method: "POST",
+          headers: { Origin: origin, Cookie: value },
+          body: new URLSearchParams({ state })
+        }),
+        env
+      );
+    expect((await submit(cookie)).status).toBe(302);
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
+    vi.stubGlobal("fetch", fetchMock);
+    const failed = await authHandler.fetch(
+      new Request(`${origin}/oauth/callback?state=${state}&code=test-code`, {
+        headers: { Cookie: cookie }
+      }),
+      env
+    );
+    expect(failed.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    // Returning to the old consent page after that response has no cookie.
+    const stale = await submit("");
+    expect(stale.status).toBe(400);
+    const message = await stale.text();
+    expect(message).toContain("AUTH_COOKIE");
+    expect(message).toContain("Start a fresh sign-in");
+    expect(message).toContain(
+      "/authorize?client_id=test-client&amp;state=client-state"
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fresh = await authHandler.fetch(new Request(startUrl), env);
+    expect(fresh.headers.get("Set-Cookie")!.split(";")[0]).not.toBe(cookie);
+  });
   it("binds consent to the browser and consumes it once", async () => {
     const { connection, info } = fixture();
     await connection.begin(info, await digest("browser"));
