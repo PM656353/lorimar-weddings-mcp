@@ -228,9 +228,9 @@ describe("authorization", () => {
       )
       .mockResolvedValueOnce(Response.json([{ site: { id: 99 } }]));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(connection.finish("browser", "code")).rejects.toThrow(
-      "configured Lorimar site"
-    );
+    expect(await connection.finish("browser", "code")).toEqual({
+      diagnostic: "AUTH_SITE_MISMATCH"
+    });
     expect(data.has("tokens")).toBe(false);
     expect(await connection.finish("browser", "code")).toBeNull();
   });

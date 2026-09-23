@@ -157,7 +157,10 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
       return "approved";
     });
   }
-  async finish(browser: string, code: string): Promise<AuthRequest | null> {
+  async finish(
+    browser: string,
+    code: string
+  ): Promise<AuthRequest | { diagnostic: string } | null> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const p = await this.ctx.storage.get<Pending>("pending");
       if (
@@ -167,28 +170,45 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
         p.stage !== "upstream"
       )
         return null;
-      // Consume before the external request so a code/state cannot be replayed.
-      await this.ctx.storage.delete("pending");
-      const tokens = await tokenRequest(this.env, {
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: `${this.env.PUBLIC_ORIGIN}/oauth/callback`
-      });
-      const sites = await fetch(`${API}/v1/sites`, {
-        headers: {
-          Authorization: `Bearer ${tokens.access}`,
-          Accept: "application/json"
-        },
-        redirect: "error",
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!sites.ok) throw new Error(`AUTH_SITES_HTTP_${sites.status}`);
-      if (!hasSite(await sites.json(), this.env.TRIPLESEAT_SITE_ID))
-        throw new Error("AUTH_SITE_MISMATCH: configured Lorimar site");
-      await this.ctx.storage.put("tokens", await seal(this.env, tokens));
-      await this.ctx.storage.put("deadline", Date.now() + TTL);
-      await this.ctx.storage.setAlarm(Date.now() + TTL);
-      return p.request;
+      let stage = "AUTH_TOKEN_NETWORK";
+      try {
+        // Consume before the external request so a code/state cannot be replayed.
+        await this.ctx.storage.delete("pending");
+        const tokens = await tokenRequest(this.env, {
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: `${this.env.PUBLIC_ORIGIN}/oauth/callback`
+        });
+        stage = "AUTH_SITES_NETWORK";
+        const sites = await fetch(`${API}/v1/sites`, {
+          headers: {
+            Authorization: `Bearer ${tokens.access}`,
+            Accept: "application/json"
+          },
+          redirect: "error",
+          signal: AbortSignal.timeout(15000)
+        });
+        if (!sites.ok) throw new Error(`AUTH_SITES_HTTP_${sites.status}`);
+        stage = "AUTH_SITES_FORMAT";
+        if (!hasSite(await sites.json(), this.env.TRIPLESEAT_SITE_ID))
+          throw new Error("AUTH_SITE_MISMATCH: configured Lorimar site");
+        stage = "AUTH_TOKEN_ENCRYPTION";
+        const encrypted = await seal(this.env, tokens);
+        stage = "AUTH_TOKEN_STORAGE";
+        await this.ctx.storage.put("tokens", encrypted);
+        await this.ctx.storage.put("deadline", Date.now() + TTL);
+        await this.ctx.storage.setAlarm(Date.now() + TTL);
+        return p.request;
+      } catch (error) {
+        // Return sanitized data: throwing inside blockConcurrencyWhile resets
+        // the object and can obscure the original failure across RPC.
+        const message = error instanceof Error ? error.message : "";
+        const diagnostic =
+          message.match(
+            /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|SCOPE_MISSING|SITE_MISMATCH)\b/
+          )?.[0] ?? stage;
+        return { diagnostic };
+      }
     });
   }
   async read(

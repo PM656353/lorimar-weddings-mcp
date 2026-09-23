@@ -181,6 +181,12 @@ export const authHandler = {
             400,
             clearCookie(state)
           );
+        if ("diagnostic" in info)
+          return page(
+            `<p>Unable to authorize. Diagnostic code: ${escapeHtml(info.diagnostic)}. Share this code with your administrator.</p>`,
+            400,
+            clearCookie(state)
+          );
         stage = "AUTH_COMPLETE";
         const result = await env.OAUTH_PROVIDER.completeAuthorization({
           request: info,
