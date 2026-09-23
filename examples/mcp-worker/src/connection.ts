@@ -199,14 +199,29 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
           redirect_uri: `${this.env.PUBLIC_ORIGIN}/oauth/callback`
         });
         stage = "AUTH_SITES_NETWORK";
-        const sites = await fetch(`${API}/v1/sites`, {
-          headers: {
-            Authorization: `Bearer ${tokens.access}`,
-            Accept: "application/json"
-          },
-          redirect: "error",
-          signal: AbortSignal.timeout(15000)
-        });
+        let sites: Response;
+        try {
+          sites = await fetch(`${API}/v1/sites`, {
+            headers: {
+              Authorization: `Bearer ${tokens.access}`,
+              Accept: "application/json"
+            },
+            redirect: "manual",
+            signal: AbortSignal.timeout(15000)
+          });
+        } catch (error) {
+          const name = error instanceof Error ? error.name : "";
+          throw new Error(
+            name === "TimeoutError" || name === "AbortError"
+              ? "AUTH_SITES_TIMEOUT"
+              : name === "TypeError"
+                ? "AUTH_SITES_FETCH_TYPE"
+                : "AUTH_SITES_FETCH_FAILED"
+          );
+        }
+        // Never forward bearer credentials to a redirected destination.
+        if (sites.status >= 300 && sites.status < 400)
+          throw new Error("AUTH_SITES_REDIRECT");
         if (!sites.ok) throw new Error(`AUTH_SITES_HTTP_${sites.status}`);
         stage = "AUTH_SITES_FORMAT";
         if (!hasSite(await sites.json(), this.env.TRIPLESEAT_SITE_ID))
@@ -224,7 +239,7 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
         const message = error instanceof Error ? error.message : "";
         const diagnostic =
           message.match(
-            /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|TOKEN_TIMEOUT|TOKEN_FETCH_TYPE|TOKEN_FETCH_FAILED|TOKEN_REDIRECT|TOKEN_NOT_JSON|SCOPE_MISSING|SITE_MISMATCH)\b/
+            /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|TOKEN_TIMEOUT|TOKEN_FETCH_TYPE|TOKEN_FETCH_FAILED|TOKEN_REDIRECT|TOKEN_NOT_JSON|SITES_TIMEOUT|SITES_FETCH_TYPE|SITES_FETCH_FAILED|SITES_REDIRECT|SCOPE_MISSING|SITE_MISMATCH)\b/
           )?.[0] ?? stage;
         return { diagnostic };
       }
@@ -273,7 +288,7 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
           Authorization: `Bearer ${tokens.access}`,
           Accept: "application/json"
         },
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(15000)
       });
       if (!response.ok) return { status: response.status };

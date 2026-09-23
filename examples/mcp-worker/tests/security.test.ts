@@ -234,6 +234,55 @@ describe("authorization", () => {
     expect(data.has("tokens")).toBe(false);
     expect(await connection.finish("browser", "code")).toBeNull();
   });
+  it.each([
+    [
+      "AUTH_SITES_REDIRECT",
+      () =>
+        Promise.resolve(
+          new Response(null, {
+            status: 302,
+            headers: { Location: "https://other.example/sites" }
+          })
+        )
+    ],
+    [
+      "AUTH_SITES_TIMEOUT",
+      () => Promise.reject(new DOMException("timeout", "TimeoutError"))
+    ],
+    [
+      "AUTH_SITES_FETCH_TYPE",
+      () => Promise.reject(new TypeError("private detail"))
+    ],
+    [
+      "AUTH_SITES_FETCH_FAILED",
+      () => Promise.reject(new Error("private detail"))
+    ]
+  ] as const)(
+    "returns %s without storing tokens or replaying requests",
+    async (diagnostic, siteResponse) => {
+      const { connection, info, data } = fixture();
+      await connection.begin(info, "browser");
+      await connection.approve("browser");
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            access_token: "secret-access",
+            refresh_token: "secret-refresh",
+            expires_in: 7200
+          })
+        )
+        .mockImplementationOnce(siteResponse);
+      vi.stubGlobal("fetch", fetchMock);
+      expect(await connection.finish("browser", "code")).toEqual({
+        diagnostic
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][1].redirect).toBe("manual");
+      expect(data.has("tokens")).toBe(false);
+      expect(await connection.finish("browser", "code")).toBeNull();
+    }
+  );
   it("encrypts tokens, serializes rotating refresh, and scopes all reads", async () => {
     const { connection, info, data } = fixture();
     await connection.begin(info, "browser");
