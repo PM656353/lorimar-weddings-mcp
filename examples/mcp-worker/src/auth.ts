@@ -106,18 +106,25 @@ export const authHandler = {
         const form = await request.formData();
         const state = form.get("state");
         const browser = cookieValue(request);
-        if (
-          typeof state !== "string" ||
-          !/^[a-f0-9-]{36}$/.test(state) ||
-          !browser
-        )
-          return page("<p>Expired request. Start again.</p>", 400);
+        if (typeof state !== "string" || !/^[a-f0-9-]{36}$/.test(state))
+          return page(
+            "<p>Sign-in form is missing its session identifier (AUTH_FORM). Reopen the connection from your assistant.</p>",
+            400
+          );
+        if (!browser)
+          return page(
+            "<p>Your browser did not return the sign-in cookie (AUTH_COOKIE). Open this connection in a regular browser tab with cookies enabled.</p>",
+            400
+          );
         if (
           !(await env.CONNECTIONS.get(
             env.CONNECTIONS.idFromName(state)
           ).approve(await digest(browser)))
         )
-          return page("<p>Expired request. Start again.</p>", 400);
+          return page(
+            "<p>The sign-in session no longer matches this browser, has expired, or was already used (AUTH_SESSION). Close other Lorimar sign-in tabs and reconnect.</p>",
+            400
+          );
         const upstream = new URL(
           "https://login.tripleseat.com/oauth2/authorize"
         );
