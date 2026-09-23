@@ -8,7 +8,7 @@ const headers = {
   "Referrer-Policy": "same-origin",
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy":
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://login.tripleseat.com; frame-ancestors 'none'; base-uri 'none'"
 };
 export function escapeHtml(text: string): string {
   return text.replace(
