@@ -93,22 +93,41 @@ async function tokenRequest(
   env: LorimarEnv,
   fields: Record<string, string>
 ): Promise<Tokens> {
-  const response = await fetch(`${API}/oauth2/token`, {
-    method: "POST",
-    redirect: "error",
-    signal: AbortSignal.timeout(15000),
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json"
-    },
-    body: new URLSearchParams({
-      ...fields,
-      client_id: env.TRIPLESEAT_CLIENT_ID,
-      client_secret: env.TRIPLESEAT_CLIENT_SECRET
-    })
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API}/oauth2/token`, {
+      method: "POST",
+      redirect: "manual",
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      },
+      body: new URLSearchParams({
+        ...fields,
+        client_id: env.TRIPLESEAT_CLIENT_ID,
+        client_secret: env.TRIPLESEAT_CLIENT_SECRET
+      })
+    });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    const label =
+      name === "TimeoutError" || name === "AbortError"
+        ? "AUTH_TOKEN_TIMEOUT"
+        : name === "TypeError"
+          ? "AUTH_TOKEN_FETCH_TYPE"
+          : "AUTH_TOKEN_FETCH_FAILED";
+    throw new Error(label);
+  }
+  if (response.status >= 300 && response.status < 400)
+    throw new Error("AUTH_TOKEN_REDIRECT");
   if (!response.ok) throw new Error(`AUTH_TOKEN_HTTP_${response.status}`);
-  const body: unknown = await response.json();
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("AUTH_TOKEN_NOT_JSON");
+  }
   if (
     !isRecord(body) ||
     typeof body.access_token !== "string" ||
@@ -205,7 +224,7 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
         const message = error instanceof Error ? error.message : "";
         const diagnostic =
           message.match(
-            /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|SCOPE_MISSING|SITE_MISMATCH)\b/
+            /\bAUTH_(?:TOKEN_HTTP_[1-5][0-9]{2}|SITES_HTTP_[1-5][0-9]{2}|TOKEN_FORMAT|TOKEN_TIMEOUT|TOKEN_FETCH_TYPE|TOKEN_FETCH_FAILED|TOKEN_REDIRECT|TOKEN_NOT_JSON|SCOPE_MISSING|SITE_MISMATCH)\b/
           )?.[0] ?? stage;
         return { diagnostic };
       }
