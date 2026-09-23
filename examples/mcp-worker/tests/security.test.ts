@@ -154,6 +154,46 @@ describe("authorization", () => {
       ).status
     ).toBe(403);
   });
+  it("keeps overlapping browser sign-ins independent and rejects replay", async () => {
+    const { env } = fixture();
+    const connections = new Map<string, TripleseatConnection>();
+    env.CONNECTIONS = {
+      idFromName: (id: string) => id,
+      get: (id: string) => {
+        if (!connections.has(id)) connections.set(id, fixture().connection);
+        return connections.get(id)!;
+      }
+    } as unknown as LorimarEnv["CONNECTIONS"];
+    const first = await authHandler.fetch(
+      new Request(`${origin}/authorize`),
+      env
+    );
+    const second = await authHandler.fetch(
+      new Request(`${origin}/authorize`),
+      env
+    );
+    const html = await first.text();
+    const state = html.match(/name="state" value="([^"]+)"/)![1];
+    const firstCookie = first.headers.get("Set-Cookie")!.split(";")[0];
+    const secondCookie = second.headers.get("Set-Cookie")!.split(";")[0];
+    expect(firstCookie.split("=")[0]).not.toBe(secondCookie.split("=")[0]);
+    const submit = (cookie: string) =>
+      authHandler.fetch(
+        new Request(`${origin}/authorize`, {
+          method: "POST",
+          headers: { Origin: origin, Cookie: cookie },
+          body: new URLSearchParams({ state })
+        }),
+        env
+      );
+    expect((await submit(secondCookie)).status).toBe(400);
+    const approved = await submit(`${firstCookie}; ${secondCookie}`);
+    expect(approved.status).toBe(302);
+    expect(new URL(approved.headers.get("Location")!).hostname).toBe(
+      "login.tripleseat.com"
+    );
+    expect((await submit(firstCookie)).status).toBe(400);
+  });
   it("binds consent to the browser and consumes it once", async () => {
     const { connection, info } = fixture();
     await connection.begin(info, await digest("browser"));

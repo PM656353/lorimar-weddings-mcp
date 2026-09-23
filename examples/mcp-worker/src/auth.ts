@@ -28,17 +28,22 @@ function page(body: string, status = 200, cookie?: string): Response {
     }
   );
 }
-function cookieValue(request: Request): string {
+function cookieName(state: string): string {
+  return `__Host-lorimar_auth_${state}`;
+}
+function cookieValue(request: Request, state: string): string {
+  const prefix = `${cookieName(state)}=`;
   return (
     (request.headers.get("Cookie") ?? "")
       .split(";")
       .map((p) => p.trim())
-      .find((p) => p.startsWith("__Host-lorimar_auth="))
-      ?.slice("__Host-lorimar_auth=".length) ?? ""
+      .find((p) => p.startsWith(prefix))
+      ?.slice(prefix.length) ?? ""
   );
 }
-const clearCookie =
-  "__Host-lorimar_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0";
+function clearCookie(state: string): string {
+  return `${cookieName(state)}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
 function ready(env: LorimarEnv): boolean {
   return !!(
     env.TRIPLESEAT_CLIENT_ID &&
@@ -97,7 +102,7 @@ export const authHandler = {
         return page(
           `<p><strong>${escapeHtml(client.clientName || "Your assistant")}</strong> requests read-only access to Lorimar's Tripleseat leads, contacts, and events.</p><p>Return address: ${escapeHtml(info.redirectUri)}</p><p>It cannot send messages, change records, or book tours. Continue only if you started this connection.</p><form method="post" action="/authorize"><input type="hidden" name="state" value="${state}"><button type="submit">Continue to Tripleseat</button></form>`,
           200,
-          `__Host-lorimar_auth=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`
+          `${cookieName(state)}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`
         );
       }
       if (url.pathname === "/authorize" && request.method === "POST") {
@@ -105,7 +110,10 @@ export const authHandler = {
           return page("<p>Invalid origin.</p>", 403);
         const form = await request.formData();
         const state = form.get("state");
-        const browser = cookieValue(request);
+        const browser = cookieValue(
+          request,
+          typeof state === "string" ? state : ""
+        );
         if (typeof state !== "string" || !/^[a-f0-9-]{36}$/.test(state))
           return page(
             "<p>Sign-in form is missing its session identifier (AUTH_FORM). Reopen the connection from your assistant.</p>",
@@ -147,7 +155,10 @@ export const authHandler = {
       if (url.pathname === "/oauth/callback" && request.method === "GET") {
         const state = url.searchParams.get("state") ?? "";
         const code = url.searchParams.get("code") ?? "";
-        const browser = cookieValue(request);
+        const browser = cookieValue(
+          request,
+          typeof state === "string" ? state : ""
+        );
         if (
           url.searchParams.has("error") ||
           !/^[a-f0-9-]{36}$/.test(state) ||
@@ -158,7 +169,7 @@ export const authHandler = {
           return page(
             "<p>Authorization was declined or expired. Start again from your assistant.</p>",
             400,
-            clearCookie
+            clearCookie(state)
           );
         const info = await env.CONNECTIONS.get(
           env.CONNECTIONS.idFromName(state)
@@ -167,7 +178,7 @@ export const authHandler = {
           return page(
             "<p>Expired authorization. Start again.</p>",
             400,
-            clearCookie
+            clearCookie(state)
           );
         const result = await env.OAUTH_PROVIDER.completeAuthorization({
           request: info,
@@ -180,7 +191,7 @@ export const authHandler = {
           status: 302,
           headers: {
             Location: result.redirectTo,
-            "Set-Cookie": clearCookie,
+            "Set-Cookie": clearCookie(state),
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer"
           }
@@ -191,8 +202,7 @@ export const authHandler = {
       // Never expose upstream bodies, authorization codes, or credentials.
       return page(
         "<p>Unable to authorize. Ask your administrator to check the Tripleseat application, read permissions, site ID, and encrypted secrets, then reconnect.</p>",
-        400,
-        clearCookie
+        400
       );
     }
   }
