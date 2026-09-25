@@ -188,9 +188,22 @@ describe("authorization", () => {
       );
     expect((await submit(secondCookie)).status).toBe(400);
     const approved = await submit(`${firstCookie}; ${secondCookie}`);
-    expect(approved.status).toBe(302);
-    expect(new URL(approved.headers.get("Location")!).hostname).toBe(
-      "login.tripleseat.com"
+    expect(approved.status).toBe(200);
+    expect(approved.headers.has("Location")).toBe(false);
+    const approvedHtml = await approved.text();
+    const destination = new URL(
+      approvedHtml.match(/href="([^"]+)"/)![1].replaceAll("&amp;", "&")
+    );
+    expect(destination.origin).toBe("https://login.tripleseat.com");
+    expect(destination.pathname).toBe("/oauth2/authorize");
+    expect(destination.searchParams.get("state")).toBe(state);
+    expect(destination.searchParams.get("redirect_uri")).toBe(
+      `${origin}/oauth/callback`
+    );
+    expect(approvedHtml).toContain('rel="noreferrer"');
+    expect(approved.headers.has("Set-Cookie")).toBe(false);
+    expect(approved.headers.get("Content-Security-Policy")).toContain(
+      "form-action 'self' https://login.tripleseat.com"
     );
     expect((await submit(firstCookie)).status).toBe(400);
   });
@@ -214,7 +227,7 @@ describe("authorization", () => {
         }),
         env
       );
-    expect((await submit(cookie)).status).toBe(302);
+    expect((await submit(cookie)).status).toBe(200);
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
     vi.stubGlobal("fetch", fetchMock);
     const failed = await authHandler.fetch(

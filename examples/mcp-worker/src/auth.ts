@@ -151,14 +151,13 @@ export const authHandler = {
           ).approvedScopes(await digest(browser)),
           state
         }).toString();
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: upstream.toString(),
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer"
-          }
-        });
+        // End the form submission here. Chromium applies form-action to the
+        // entire redirect chain, including the eventual ChatGPT callback.
+        // A user-initiated link starts a separate navigation without weakening
+        // the form policy, Origin check, browser binding, or one-use approval.
+        return page(
+          `<p>Your consent has been recorded. Continue to Tripleseat to finish connecting your account.</p><p><a rel="noreferrer" href="${escapeHtml(upstream.toString())}">Continue to Tripleseat sign-in</a></p><p>Use this link once. If sign-in fails, start a new connection from ChatGPT.</p>`
+        );
       }
       if (url.pathname === "/oauth/callback" && request.method === "GET") {
         const state = url.searchParams.get("state") ?? "";
