@@ -1,3 +1,4 @@
+import { parseChanges } from "./updates";
 import { DurableObject } from "cloudflare:workers";
 import type {
   AuthRequest,
@@ -15,6 +16,12 @@ export interface LorimarEnv {
   PUBLIC_ORIGIN: string;
 }
 export const READ_SCOPE = "tripleseat:read";
+export const WRITE_SCOPE = "tripleseat:write";
+export function upstreamScopes(write: boolean): string {
+  return write
+    ? `${UPSTREAM_SCOPES} leads:write contacts:write`
+    : UPSTREAM_SCOPES;
+}
 export const UPSTREAM_SCOPES =
   "leads:read contacts:read events:read sites:read";
 const API = "https://api.tripleseat.com";
@@ -30,6 +37,7 @@ type Tokens = {
   refresh: string;
   expires: number;
   site: string;
+  write?: boolean;
 };
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -91,7 +99,8 @@ async function open(
 }
 async function tokenRequest(
   env: LorimarEnv,
-  fields: Record<string, string>
+  fields: Record<string, string>,
+  write = false
 ): Promise<Tokens> {
   let response: Response;
   try {
@@ -137,11 +146,13 @@ async function tokenRequest(
   ) {
     throw new Error("AUTH_TOKEN_FORMAT");
   }
+  if (write && typeof body.scope !== "string")
+    throw new Error("AUTH_SCOPE_MISSING");
   if (
     typeof body.scope === "string" &&
-    UPSTREAM_SCOPES.split(" ").some(
-      (scope) => !body.scope!.toString().split(" ").includes(scope)
-    )
+    upstreamScopes(write)
+      .split(" ")
+      .some((scope) => !body.scope!.toString().split(" ").includes(scope))
   ) {
     throw new Error("AUTH_SCOPE_MISSING");
   }
@@ -149,7 +160,8 @@ async function tokenRequest(
     access: body.access_token,
     refresh: body.refresh_token,
     expires: Date.now() + body.expires_in * 1000,
-    site: env.TRIPLESEAT_SITE_ID
+    site: env.TRIPLESEAT_SITE_ID,
+    write
   };
 }
 
@@ -176,6 +188,17 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
       return "approved";
     });
   }
+  async approvedScopes(browser: string): Promise<string> {
+    const pending = await this.ctx.storage.get<Pending>("pending");
+    if (
+      !pending ||
+      pending.browser !== browser ||
+      pending.stage !== "upstream" ||
+      pending.expires < Date.now()
+    )
+      throw new Error("AUTH_STATE_MISSING");
+    return upstreamScopes(pending.request.scope.includes(WRITE_SCOPE));
+  }
   async finish(
     browser: string,
     code: string
@@ -193,11 +216,15 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
       try {
         // Consume before the external request so a code/state cannot be replayed.
         await this.ctx.storage.delete("pending");
-        const tokens = await tokenRequest(this.env, {
-          grant_type: "authorization_code",
-          code,
-          redirect_uri: `${this.env.PUBLIC_ORIGIN}/oauth/callback`
-        });
+        const tokens = await tokenRequest(
+          this.env,
+          {
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: `${this.env.PUBLIC_ORIGIN}/oauth/callback`
+          },
+          p.request.scope.includes(WRITE_SCOPE)
+        );
         stage = "AUTH_SITES_NETWORK";
         let sites: Response;
         try {
@@ -273,10 +300,14 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
         // An interrupted rotating-token refresh requires reauthorization rather
         // than retrying an old refresh token whose outcome is unknown.
         await this.ctx.storage.delete("tokens");
-        tokens = await tokenRequest(this.env, {
-          grant_type: "refresh_token",
-          refresh_token: tokens.refresh
-        });
+        tokens = await tokenRequest(
+          this.env,
+          {
+            grant_type: "refresh_token",
+            refresh_token: tokens.refresh
+          },
+          tokens.write === true
+        );
         await this.ctx.storage.put("tokens", await seal(this.env, tokens));
       }
       const url = new URL(path, API);
@@ -293,6 +324,102 @@ export class TripleseatConnection extends DurableObject<LorimarEnv> {
       });
       if (!response.ok) return { status: response.status };
       return { status: 200, data: await response.text() };
+    });
+  }
+  async update(
+    resource: string,
+    id: number,
+    revision: string,
+    changes: unknown
+  ): Promise<{ status: number; data?: string }> {
+    const fields = parseChanges(resource, changes);
+    if (
+      !fields ||
+      !Number.isSafeInteger(id) ||
+      id < 1 ||
+      !/^[a-f0-9]{64}$/.test(revision)
+    )
+      return { status: 400 };
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const stored = await this.ctx.storage.get<{
+        iv: number[];
+        data: number[];
+      }>("tokens");
+      const deadline = await this.ctx.storage.get<number>("deadline");
+      if (!stored || !deadline || Date.now() >= deadline)
+        return { status: 401 };
+      let tokens = await open(this.env, stored);
+      if (tokens.site !== this.env.TRIPLESEAT_SITE_ID || tokens.write !== true)
+        return { status: 403 };
+      if (tokens.expires <= Date.now() + 60000) {
+        await this.ctx.storage.delete("tokens");
+        tokens = await tokenRequest(
+          this.env,
+          { grant_type: "refresh_token", refresh_token: tokens.refresh },
+          true
+        );
+        await this.ctx.storage.put("tokens", await seal(this.env, tokens));
+      }
+      const url = new URL(`/v1/${resource}/${id}`, API);
+      url.searchParams.set("site_id", tokens.site);
+      const headers = {
+        Authorization: `Bearer ${tokens.access}`,
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      };
+      const current = await fetch(url, {
+        headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!current.ok) return { status: current.status };
+      const before = await current.text();
+      if ((await digest(before)) !== revision) return { status: 409 };
+      const singular = resource.slice(0, -1);
+      const decoded: unknown = JSON.parse(before);
+      if (
+        !isRecord(decoded) ||
+        !isRecord(decoded[singular]) ||
+        String(decoded[singular].id) !== String(id)
+      )
+        return { status: 422 };
+      if (String(decoded[singular].site_id) !== tokens.site)
+        return { status: 403 };
+      // Persist uncertainty before sending; never automatically repeat a write
+      // when a timeout or interrupted response makes its outcome unknown.
+      const operation = `update:${resource}:${id}:${revision}`;
+      if (await this.ctx.storage.get(operation)) return { status: 409 };
+      await this.ctx.storage.put(operation, "attempted");
+      try {
+        const response = await fetch(url, {
+          method: "PUT",
+          headers,
+          redirect: "manual",
+          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({
+            site_id: Number(tokens.site),
+            [singular]: fields
+          })
+        });
+        if (!response.ok) return { status: response.status };
+        const verified = await fetch(url, {
+          headers,
+          redirect: "manual",
+          signal: AbortSignal.timeout(15000)
+        });
+        if (!verified.ok) return { status: 502 };
+        const after = await verified.text();
+        const value: unknown = JSON.parse(after);
+        const record = isRecord(value) ? value[singular] : null;
+        if (
+          !isRecord(record) ||
+          Object.entries(fields).some(([k, v]) => record[k] !== v)
+        )
+          return { status: 502 };
+        return { status: 200, data: after };
+      } catch {
+        return { status: 502 };
+      }
     });
   }
   async alarm(): Promise<void> {
