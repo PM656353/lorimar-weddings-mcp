@@ -516,3 +516,84 @@ describe("controlled record updates", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("MCP incremental authorization", () => {
+  it("advertises update scopes and challenges a read grant without touching records", async () => {
+    const { InMemoryTransport } = await import("@modelcontextprotocol/server");
+    const { createServer } = await import("../src/server");
+    const { env, connection } = fixture();
+    const update = vi.spyOn(connection, "update");
+    const [client, transport] = InMemoryTransport.createLinkedPair();
+    const responses: unknown[] = [];
+    client.onmessage = (message) => {
+      responses.push(message);
+    };
+    const server = createServer(env, "test-connection", false);
+    await server.connect(transport);
+    await client.start();
+    try {
+      await client.send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {}
+      });
+      await vi.waitFor(() => expect(responses).toHaveLength(1));
+      expect(responses[0]).toMatchObject({
+        result: {
+          tools: expect.arrayContaining([
+            expect.objectContaining({
+              name: "update_lead",
+              _meta: {
+                securitySchemes: [
+                  {
+                    type: "oauth2",
+                    scopes: ["tripleseat:read", "tripleseat:write"]
+                  }
+                ]
+              }
+            }),
+            expect.objectContaining({
+              name: "get_lead",
+              _meta: {
+                securitySchemes: [
+                  { type: "oauth2", scopes: ["tripleseat:read"] }
+                ]
+              }
+            })
+          ])
+        }
+      });
+      await client.send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "update_lead",
+          arguments: {
+            id: 123,
+            revision: "a".repeat(64),
+            changes: { guest_count: 101 }
+          }
+        }
+      });
+      await vi.waitFor(() => expect(responses).toHaveLength(2));
+      expect(responses[1]).toMatchObject({
+        result: {
+          isError: true,
+          _meta: {
+            "mcp/www_authenticate": [
+              expect.stringContaining(
+                'error="insufficient_scope", scope="tripleseat:read tripleseat:write"'
+              )
+            ]
+          }
+        }
+      });
+      expect(update).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+      await client.close();
+    }
+  });
+});

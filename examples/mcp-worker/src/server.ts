@@ -8,7 +8,11 @@ import { READ_SCOPE, WRITE_SCOPE, digest, isRecord } from "./connection";
 import type { LorimarEnv } from "./connection";
 export { TripleseatConnection } from "./connection";
 
-function createServer(env: LorimarEnv, connectionId: string, write = false) {
+export function createServer(
+  env: LorimarEnv,
+  connectionId: string,
+  write = false
+) {
   const server = new McpServer({
     name: "Lorimar Weddings — Tripleseat",
     version: "1.0.0"
@@ -72,7 +76,8 @@ function createServer(env: LorimarEnv, connectionId: string, write = false) {
     {
       description:
         "Shows the configured Tripleseat site and capabilities of this authorization. Does not test Tripleseat credentials.",
-      annotations
+      annotations,
+      _meta: { securitySchemes: [{ type: "oauth2", scopes: [READ_SCOPE] }] }
     },
     async () => ({
       content: [
@@ -95,6 +100,7 @@ function createServer(env: LorimarEnv, connectionId: string, write = false) {
       description:
         "Retrieve leads in newest-created order, 50 per page. Check each lead's event type to identify weddings; this does not assume all leads are weddings. Continue through total_pages when needed.",
       annotations,
+      _meta: { securitySchemes: [{ type: "oauth2", scopes: [READ_SCOPE] }] },
       inputSchema: {
         page: z.number().int().min(1).max(10000).default(1),
         created_after: z.iso.date().optional(),
@@ -124,6 +130,7 @@ function createServer(env: LorimarEnv, connectionId: string, write = false) {
       {
         description: `Read one Tripleseat ${resource.slice(0, -1)} by ID within the configured Lorimar site.`,
         annotations,
+        _meta: { securitySchemes: [{ type: "oauth2", scopes: [READ_SCOPE] }] },
         inputSchema: {
           id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
         }
@@ -140,6 +147,11 @@ function createServer(env: LorimarEnv, connectionId: string, write = false) {
       {
         description:
           "Update selected details of an existing record. First read it and supply its revision. Preserve existing descriptive information. Only use customer-provided corrections. Does not book tours or send messages. On an uncertain outcome, read the record and request review; do not retry automatically.",
+        _meta: {
+          securitySchemes: [
+            { type: "oauth2", scopes: [READ_SCOPE, WRITE_SCOPE] }
+          ]
+        },
         annotations: {
           readOnlyHint: false,
           destructiveHint: true,
@@ -156,6 +168,11 @@ function createServer(env: LorimarEnv, connectionId: string, write = false) {
         if (!write)
           return {
             isError: true,
+            _meta: {
+              "mcp/www_authenticate": [
+                `Bearer resource_metadata="${env.PUBLIC_ORIGIN}/.well-known/oauth-protected-resource", error="insufficient_scope", scope="${READ_SCOPE} ${WRITE_SCOPE}", error_description="Record updates require additional authorization"`
+              ]
+            },
             content: [
               {
                 type: "text" as const,
