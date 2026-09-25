@@ -1,5 +1,5 @@
 import type { LorimarEnv } from "./connection";
-import { digest, READ_SCOPE, UPSTREAM_SCOPES } from "./connection";
+import { digest, READ_SCOPE, WRITE_SCOPE } from "./connection";
 
 const headers = {
   "Content-Type": "text/html; charset=utf-8",
@@ -79,7 +79,7 @@ export const authHandler = {
           info.responseType !== "code" ||
           info.codeChallengeMethod !== "S256" ||
           !/^[A-Za-z0-9_-]{43}$/.test(info.codeChallenge ?? "") ||
-          info.scope.some((s) => s !== READ_SCOPE)
+          info.scope.some((s) => s !== READ_SCOPE && s !== WRITE_SCOPE)
         ) {
           return page(
             "<p>Invalid authorization request. Start again from your assistant.</p>",
@@ -93,7 +93,9 @@ export const authHandler = {
           : [];
         if (resources.some((r) => r !== `${env.PUBLIC_ORIGIN}/mcp`))
           return page("<p>Invalid resource.</p>", 400);
-        info.scope = [READ_SCOPE];
+        info.scope = info.scope.includes(WRITE_SCOPE)
+          ? [READ_SCOPE, WRITE_SCOPE]
+          : [READ_SCOPE];
         const state = crypto.randomUUID();
         const browser = crypto.randomUUID();
         await env.CONNECTIONS.get(env.CONNECTIONS.idFromName(state)).begin(
@@ -101,7 +103,7 @@ export const authHandler = {
           await digest(browser)
         );
         return page(
-          `<p><strong>${escapeHtml(client.clientName || "Your assistant")}</strong> requests read-only access to Lorimar's Tripleseat leads, contacts, and events.</p><p>Return address: ${escapeHtml(info.redirectUri)}</p><p>It cannot send messages, change records, or book tours. Continue only if you started this connection.</p><form method="post" action="${escapeHtml(`/authorize${url.search}`)}"><input type="hidden" name="state" value="${state}"><button type="submit">Continue to Tripleseat</button></form>`,
+          `<p><strong>${escapeHtml(client.clientName || "Your assistant")}</strong> requests ${info.scope.includes(WRITE_SCOPE) ? "read access and permission to update selected lead and contact details in" : "read-only access to"} Lorimar's Tripleseat leads, contacts, and events.</p><p>Return address: ${escapeHtml(info.redirectUri)}</p><p>${info.scope.includes(WRITE_SCOPE) ? "It can update names, lead guest counts and contact preferences, and descriptive information. It cannot delete records, send messages, or book tours." : "It cannot send messages, change records, or book tours."} Continue only if you started this connection.</p><form method="post" action="${escapeHtml(`/authorize${url.search}`)}"><input type="hidden" name="state" value="${state}"><button type="submit">Continue to Tripleseat</button></form>`,
           200,
           `${cookieName(state)}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`
         );
@@ -144,7 +146,9 @@ export const authHandler = {
           client_id: env.TRIPLESEAT_CLIENT_ID,
           redirect_uri: `${env.PUBLIC_ORIGIN}/oauth/callback`,
           response_type: "code",
-          scope: UPSTREAM_SCOPES,
+          scope: await env.CONNECTIONS.get(
+            env.CONNECTIONS.idFromName(state)
+          ).approvedScopes(await digest(browser)),
           state
         }).toString();
         return new Response(null, {
@@ -195,9 +199,16 @@ export const authHandler = {
         const result = await env.OAUTH_PROVIDER.completeAuthorization({
           request: info,
           userId: state,
-          scope: [READ_SCOPE],
-          metadata: { label: "Lorimar Tripleseat read-only connection" },
-          props: { connectionId: state }
+          scope: info.scope,
+          metadata: {
+            label: info.scope.includes(WRITE_SCOPE)
+              ? "Lorimar Tripleseat controlled updates"
+              : "Lorimar Tripleseat read-only connection"
+          },
+          props: {
+            connectionId: state,
+            write: info.scope.includes(WRITE_SCOPE)
+          }
         });
         return new Response(null, {
           status: 302,

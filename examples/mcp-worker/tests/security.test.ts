@@ -397,3 +397,122 @@ describe("MCP OAuth boundary", () => {
     );
   });
 });
+
+import { parseChanges } from "../src/updates";
+import { WRITE_SCOPE, upstreamScopes } from "../src/connection";
+describe("controlled record updates", () => {
+  it("rejects deletion, ownership, location, opt-in and empty edits", () => {
+    for (const changes of [
+      {},
+      { site_id: 99 },
+      { _destroy: true },
+      { owned_by: 2 },
+      { email_opt_in: true },
+      { first_name: "" },
+      { event_date: "2027-01-01" }
+    ]) {
+      expect(parseChanges("leads", changes)).toBeNull();
+      expect(parseChanges("contacts", changes)).toBeNull();
+    }
+    expect(parseChanges("events", { first_name: "Jen" })).toBeNull();
+  });
+  async function authorized(write: boolean) {
+    const fixtureValue = fixture();
+    const { connection, info } = fixtureValue;
+    if (write) info.scope.push(WRITE_SCOPE);
+    await connection.begin(info, "browser");
+    await connection.approve("browser");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "test",
+          refresh_token: "test",
+          expires_in: 7200,
+          scope: upstreamScopes(write)
+        })
+      )
+      .mockResolvedValueOnce(Response.json([{ site: { id: 42 } }]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await connection.finish("browser", "code")).toEqual(info);
+    fetchMock.mockReset();
+    return { ...fixtureValue, fetchMock };
+  }
+  it("does not upgrade existing read grants", async () => {
+    const { connection, fetchMock } = await authorized(false);
+    expect(
+      (await connection.update("leads", 1, "a".repeat(64), { guest_count: 50 }))
+        .status
+    ).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("rejects a changed record before making a write", async () => {
+    const { connection, fetchMock } = await authorized(true);
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ lead: { id: 1, site_id: 42, guest_count: 100 } })
+    );
+    expect(
+      (await connection.update("leads", 1, "a".repeat(64), { guest_count: 50 }))
+        .status
+    ).toBe(409);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("writes only selected fields at the configured site and reads back the result", async () => {
+    const { connection, fetchMock } = await authorized(true);
+    const before = JSON.stringify({
+      lead: { id: 1, site_id: 42, guest_count: 100 }
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response(before))
+      .mockResolvedValueOnce(
+        Response.json({ lead: { id: 1, site_id: 42, guest_count: 50 } })
+      )
+      .mockResolvedValueOnce(
+        Response.json({ lead: { id: 1, site_id: 42, guest_count: 50 } })
+      );
+    expect(
+      (
+        await connection.update("leads", 1, await digest(before), {
+          guest_count: 50
+        })
+      ).status
+    ).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [url, options] = fetchMock.mock.calls[1];
+    expect(String(url)).toBe(
+      "https://api.tripleseat.com/v1/leads/1?site_id=42"
+    );
+    expect(options.method).toBe("PUT");
+    expect(options.redirect).toBe("manual");
+    expect(JSON.parse(options.body)).toEqual({
+      site_id: 42,
+      lead: { guest_count: 50 }
+    });
+  });
+  it("blocks replay after an uncertain write outcome", async () => {
+    const { connection, fetchMock } = await authorized(true);
+    const before = JSON.stringify({
+      contact: { id: 1, site_id: 42, first_name: "Jen" }
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response(before))
+      .mockRejectedValueOnce(new TypeError("timeout"));
+    const revision = await digest(before);
+    expect(
+      (
+        await connection.update("contacts", 1, revision, {
+          first_name: "Jennifer"
+        })
+      ).status
+    ).toBe(502);
+    fetchMock.mockResolvedValueOnce(new Response(before));
+    expect(
+      (
+        await connection.update("contacts", 1, revision, {
+          first_name: "Jennifer"
+        })
+      ).status
+    ).toBe(409);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
